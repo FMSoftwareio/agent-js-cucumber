@@ -9,26 +9,15 @@ const {
   isScenarioBasedStatistics,
 } = require('./utils');
 const Context = require('./context');
+const DocumentStorage = require('./documents-storage');
 const { findFeature, findScenario, findBackground, findStepDefinition } = require('./itemFinders');
 
+const afterHookURIToSkip = 'protractor-cucumber-framework';
+
 const createRPFormatterClass = (config) => {
-  const gherkinDocuments = {};
-  const pickleDocuments = {};
+  const documentsStorage = new DocumentStorage();
   const reportportal = new ReportPortalClient(config);
   const attributesConf = !config.attributes ? [] : config.attributes;
-  const afterHookURIToSkip = 'protractor-cucumber-framework';
-
-  function cacheDocument(gherkinDocument) {
-    gherkinDocuments[gherkinDocument.uri] = gherkinDocument.document;
-  }
-
-  function cacheAcceptedPickle(event) {
-    pickleDocuments[event.uri] = event.pickle;
-  }
-
-  function isAcceptedPickleCached(event) {
-    return !!pickleDocuments[event.uri];
-  }
 
   return class CucumberReportPortalFormatter extends Formatter {
     constructor(options) {
@@ -52,7 +41,7 @@ const createRPFormatterClass = (config) => {
     }
 
     onGherkinDocument(event) {
-      cacheDocument(event);
+      documentsStorage.cacheDocument(event);
 
       // BeforeFeatures
       if (!this.contextState.context.launchId) {
@@ -69,10 +58,10 @@ const createRPFormatterClass = (config) => {
     }
 
     onPickleAccepted(event) {
-      if (!isAcceptedPickleCached(event)) {
-        cacheAcceptedPickle(event);
+      if (!documentsStorage.isAcceptedPickleCached(event)) {
+        documentsStorage.cacheAcceptedPickle(event);
 
-        const featureDocument = findFeature(gherkinDocuments, event);
+        const featureDocument = findFeature(documentsStorage.gherkinDocuments, event);
         const featureUri = getUri(event.uri);
         const description = featureDocument.description ? featureDocument.description : featureUri;
         const { name } = featureDocument;
@@ -108,7 +97,7 @@ const createRPFormatterClass = (config) => {
           this.contextState.context.launchId,
         ).tempId;
 
-        pickleDocuments[event.uri].featureId = featureId;
+        documentsStorage.pickleDocuments[event.uri].featureId = featureId;
       }
     }
 
@@ -119,8 +108,8 @@ const createRPFormatterClass = (config) => {
 
     onTestCaseStarted(event) {
       this.contextState.context.scenario = findScenario(gherkinDocuments, event.sourceLocation);
-      const featureTags = findFeature(gherkinDocuments, event.sourceLocation).tags;
-      const pickle = pickleDocuments[getUri(event.sourceLocation.uri)];
+      const featureTags = findFeature(documentsStorage.gherkinDocuments, event.sourceLocation).tags;
+      const pickle = documentsStorage.pickleDocuments[getUri(event.sourceLocation.uri)];
       const keyword = this.contextState.context.scenario.keyword
         ? this.contextState.context.scenario.keyword
         : this.contextState.context.scenario.type;
@@ -133,7 +122,7 @@ const createRPFormatterClass = (config) => {
       const description =
         this.contextState.context.scenario.description ||
         [getUri(event.sourceLocation.uri), event.sourceLocation.line].join(':'); // TODO codeRef
-      const { featureId } = pickleDocuments[event.sourceLocation.uri];
+      const { featureId } = documentsStorage.pickleDocuments[event.sourceLocation.uri];
 
       if (this.contextState.context.lastScenarioDescription !== name) {
         this.contextState.context.lastScenarioDescription = name;
@@ -397,8 +386,9 @@ const createRPFormatterClass = (config) => {
       }
       const { total, done } = this.contextState.context.scenariosCount[featureUri];
       if (done === total) {
-        const featureStatus = this.contextState.context.failedScenarios[featureUri] > 0 ? 'failed' : 'passed';
-        reportportal.finishTestItem(pickleDocuments[featureUri].featureId, {
+        const featureStatus =
+          this.contextState.context.failedScenarios[featureUri] > 0 ? 'failed' : 'passed';
+        reportportal.finishTestItem(documentsStorage.pickleDocuments[featureUri].featureId, {
           status: featureStatus,
           endTime: reportportal.helpers.now(),
         });
