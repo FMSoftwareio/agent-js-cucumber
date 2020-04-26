@@ -1,16 +1,9 @@
 const { Formatter } = require('cucumber');
 const ReportPortalClient = require('reportportal-client');
-const {
-  cleanContext,
-  createAttribute,
-  createTagComparator,
-  getJSON,
-  getUri,
-  isScenarioBasedStatistics,
-} = require('./utils');
+const utils = require('./utils');
 const Context = require('./context');
 const DocumentStorage = require('./documents-storage');
-const { findFeature, findScenario, findBackground, findStepDefinition } = require('./itemFinders');
+const itemFinders = require('./itemFinders');
 
 const afterHookURIToSkip = 'protractor-cucumber-framework';
 
@@ -23,6 +16,9 @@ const createRPFormatterClass = (config) => {
     constructor(options) {
       super(options);
       this.contextState = new Context();
+      this.documentsStorage = documentsStorage;
+      this.reportportal = reportportal;
+      this.attributesConf = attributesConf;
 
       const { rerun, rerunOf } = options.parsedArgvOptions || {};
 
@@ -41,11 +37,11 @@ const createRPFormatterClass = (config) => {
     }
 
     onGherkinDocument(event) {
-      documentsStorage.cacheDocument(event);
+      this.documentsStorage.cacheDocument(event);
 
       // BeforeFeatures
       if (!this.contextState.context.launchId) {
-        const launch = reportportal.startLaunch({
+        const launch = this.reportportal.startLaunch({
           name: config.launch,
           startTime: reportportal.helpers.now(),
           description: !config.description ? '' : config.description,
@@ -58,15 +54,20 @@ const createRPFormatterClass = (config) => {
     }
 
     onPickleAccepted(event) {
-      if (!documentsStorage.isAcceptedPickleCached(event)) {
-        documentsStorage.cacheAcceptedPickle(event);
+      const isPickleCached = this.documentsStorage.isAcceptedPickleCached(event);
 
-        const featureDocument = findFeature(documentsStorage.gherkinDocuments, event);
-        const featureUri = getUri(event.uri);
+      if (!isPickleCached) {
+        this.documentsStorage.cacheAcceptedPickle(event);
+
+        const featureDocument = itemFinders.findFeature(
+          this.documentsStorage.gherkinDocuments,
+          event,
+        );
+        const featureUri = utils.getUri(event.uri);
         const description = featureDocument.description ? featureDocument.description : featureUri;
         const { name } = featureDocument;
         const eventAttributes = featureDocument.tags
-          ? featureDocument.tags.map((tag) => createAttribute(tag.name))
+          ? featureDocument.tags.map((tag) => utils.createAttribute(tag.name))
           : [];
 
         let total = featureDocument.children.length;
@@ -78,7 +79,7 @@ const createRPFormatterClass = (config) => {
           }
         });
 
-        this.contextState.context.background = findBackground(featureDocument);
+        this.contextState.context.background = itemFinders.findBackground(featureDocument);
         if (this.contextState.context.background) {
           total -= 1;
         }
@@ -86,18 +87,18 @@ const createRPFormatterClass = (config) => {
         this.contextState.context.scenariosCount[featureUri] = { total, done: 0 };
 
         // BeforeFeature
-        const featureId = reportportal.startTestItem(
+        const featureId = this.reportportal.startTestItem(
           {
             name,
-            startTime: reportportal.helpers.now(),
-            type: isScenarioBasedStatistics() ? 'TEST' : 'SUITE',
+            startTime: this.reportportal.helpers.now(),
+            type: utils.isScenarioBasedStatistics() ? 'TEST' : 'SUITE',
             description,
             attributes: eventAttributes,
           },
           this.contextState.context.launchId,
         ).tempId;
 
-        documentsStorage.pickleDocuments[event.uri].featureId = featureId;
+        this.documentsStorage.pickleDocuments[event.uri].featureId = featureId;
       }
     }
 
@@ -107,21 +108,27 @@ const createRPFormatterClass = (config) => {
     }
 
     onTestCaseStarted(event) {
-      this.contextState.context.scenario = findScenario(gherkinDocuments, event.sourceLocation);
-      const featureTags = findFeature(documentsStorage.gherkinDocuments, event.sourceLocation).tags;
-      const pickle = documentsStorage.pickleDocuments[getUri(event.sourceLocation.uri)];
+      this.contextState.context.scenario = itemFinders.findScenario(
+        this.documentsStorage.gherkinDocuments,
+        event.sourceLocation,
+      );
+      const featureTags = itemFinders.findFeature(
+        this.documentsStorage.gherkinDocuments,
+        event.sourceLocation,
+      ).tags;
+      const pickle = this.documentsStorage.pickleDocuments[utils.getUri(event.sourceLocation.uri)];
       const keyword = this.contextState.context.scenario.keyword
         ? this.contextState.context.scenario.keyword
         : this.contextState.context.scenario.type;
       let name = [keyword, this.contextState.context.scenario.name].join(': ');
       const eventAttributes = pickle.tags
         ? pickle.tags
-            .filter((tag) => !featureTags.find(createTagComparator(tag)))
-            .map((tag) => createAttribute(tag.name))
+            .filter((tag) => !featureTags.find(utils.createTagComparator(tag)))
+            .map((tag) => utils.createAttribute(tag.name))
         : [];
       const description =
         this.contextState.context.scenario.description ||
-        [getUri(event.sourceLocation.uri), event.sourceLocation.line].join(':'); // TODO codeRef
+        [utils.getUri(event.sourceLocation.uri), event.sourceLocation.line].join(':'); // TODO codeRef
       const { featureId } = documentsStorage.pickleDocuments[event.sourceLocation.uri];
 
       if (this.contextState.context.lastScenarioDescription !== name) {
@@ -133,15 +140,15 @@ const createRPFormatterClass = (config) => {
       }
 
       // BeforeScenario
-      if (isScenarioBasedStatistics() || event.attemptNumber < 2) {
-        this.contextState.context.scenarioId = reportportal.startTestItem(
+      if (utils.isScenarioBasedStatistics() || event.attemptNumber < 2) {
+        this.contextState.context.scenarioId = this.reportportal.startTestItem(
           {
             name,
-            startTime: reportportal.helpers.now(),
-            type: isScenarioBasedStatistics() ? 'STEP' : 'TEST',
+            startTime: this.reportportal.helpers.now(),
+            type: utils.isScenarioBasedStatistics() ? 'STEP' : 'TEST',
             description,
             attributes: eventAttributes,
-            retry: isScenarioBasedStatistics() && event.attemptNumber > 1,
+            retry: false,
           },
           this.contextState.context.launchId,
           featureId,
@@ -165,7 +172,7 @@ const createRPFormatterClass = (config) => {
         return;
 
       this.contextState.context.step = this.contextState.findStep(event);
-      this.contextState.context.stepDefinition = findStepDefinition(event);
+      this.contextState.context.stepDefinition = itemFinders.findStepDefinition(event);
 
       // BeforeStep
       const args = [];
@@ -186,14 +193,14 @@ const createRPFormatterClass = (config) => {
         type = 'AFTER_TEST';
       }
 
-      this.contextState.context.stepId = reportportal.startTestItem(
+      this.contextState.context.stepId = this.reportportal.startTestItem(
         {
           name,
-          startTime: reportportal.helpers.now(),
+          startTime: this.reportportal.helpers.now(),
           type,
           description: args.length ? args.join('\n').trim() : '',
-          hasStats: !isScenarioBasedStatistics(),
-          retry: !isScenarioBasedStatistics() && event.testCase.attemptNumber > 1,
+          hasStats: !utils.isScenarioBasedStatistics(),
+          retry: !utils.isScenarioBasedStatistics() && event.testCase.attemptNumber > 1,
         },
         this.contextState.context.launchId,
         this.contextState.context.scenarioId,
@@ -220,8 +227,8 @@ const createRPFormatterClass = (config) => {
           break;
         }
         case 'pending': {
-          reportportal.sendLog(this.contextState.context.stepId, {
-            time: reportportal.helpers.now(),
+          this.reportportal.sendLog(this.contextState.context.stepId, {
+            time: this.reportportal.helpers.now(),
             level: 'WARN',
             message: "This step is marked as 'pending'",
           });
@@ -231,8 +238,8 @@ const createRPFormatterClass = (config) => {
           break;
         }
         case 'undefined': {
-          reportportal.sendLog(this.contextState.context.stepId, {
-            time: reportportal.helpers.now(),
+          this.reportportal.sendLog(this.contextState.context.stepId, {
+            time: this.reportportal.helpers.now(),
             level: 'ERROR',
             message: 'There is no step definition found. Please verify and implement it.',
           });
@@ -242,8 +249,8 @@ const createRPFormatterClass = (config) => {
           break;
         }
         case 'ambiguous': {
-          reportportal.sendLog(this.contextState.context.stepId, {
-            time: reportportal.helpers.now(),
+          this.reportportal.sendLog(this.contextState.context.stepId, {
+            time: this.reportportal.helpers.now(),
             level: 'ERROR',
             message:
               'There are more than one step implementation. Please verify and reimplement it.',
@@ -266,14 +273,14 @@ const createRPFormatterClass = (config) => {
           const errorMessage = `${
             this.contextState.context.stepDefinition.uri
           }\n ${event.result.exception.toString()}`;
-          reportportal.sendLog(this.contextState.context.stepId, {
-            time: reportportal.helpers.now(),
+          this.reportportal.sendLog(this.contextState.context.stepId, {
+            time: this.reportportal.helpers.now(),
             level: 'ERROR',
             message: errorMessage,
           });
           if (global.browser && config.takeScreenshot && config.takeScreenshot === 'onFailure') {
             const request = {
-              time: reportportal.helpers.now(),
+              time: this.reportportal.helpers.now(),
               level: 'ERROR',
               file: { name: sceenshotName },
               message: sceenshotName,
@@ -284,7 +291,7 @@ const createRPFormatterClass = (config) => {
                 type: 'image/png',
                 content: png,
               };
-              reportportal.sendLog(this.contextState.context.stepId, request, fileObj);
+              this.reportportal.sendLog(this.contextState.context.stepId, request, fileObj);
             });
           }
           break;
@@ -296,7 +303,7 @@ const createRPFormatterClass = (config) => {
       // AfterStep
       const request = {
         status: this.contextState.context.stepStatus,
-        endTime: reportportal.helpers.now(),
+        endTime: this.reportportal.helpers.now(),
       };
       if (request.status === 'not_found') {
         request.status = 'failed';
@@ -312,7 +319,7 @@ const createRPFormatterClass = (config) => {
         };
       }
 
-      reportportal.finishTestItem(this.contextState.context.stepId, request);
+      this.reportportal.finishTestItem(this.contextState.context.stepId, request);
     }
 
     onTestStepAttachment(event) {
@@ -322,13 +329,14 @@ const createRPFormatterClass = (config) => {
       if (
         event.data &&
         event.data.length &&
-        (this.contextState.context.stepStatus === 'passed' || this.contextState.context.stepStatus === 'failed')
+        (this.contextState.context.stepStatus === 'passed' ||
+          this.contextState.context.stepStatus === 'failed')
       ) {
         switch (event.media.type) {
           case 'text/plain': {
-            const logMessage = getJSON(event.data);
+            const logMessage = utils.getJSON(event.data);
             const request = {
-              time: reportportal.helpers.now(),
+              time: this.reportportal.helpers.now(),
             };
             if (logMessage) {
               request.level = logMessage.level;
@@ -337,19 +345,19 @@ const createRPFormatterClass = (config) => {
               request.level = 'DEBUG';
               request.message = event.data;
             }
-            reportportal.sendLog(this.contextState.context.stepId, request);
+            this.reportportal.sendLog(this.contextState.context.stepId, request);
             break;
           }
           default: {
             const request = {
-              time: reportportal.helpers.now(),
+              time: this.reportportal.helpers.now(),
               level: this.contextState.context.stepStatus === 'passed' ? 'DEBUG' : 'ERROR',
               message: fileName,
               file: {
                 name: fileName,
               },
             };
-            const parsedObject = getJSON(event.data);
+            const parsedObject = utils.getJSON(event.data);
             if (parsedObject) {
               request.level = parsedObject.level;
               request.message = parsedObject.message;
@@ -360,7 +368,7 @@ const createRPFormatterClass = (config) => {
               type: event.media.type,
               content: (parsedObject && parsedObject.data) || event.data,
             };
-            reportportal.sendLog(this.contextState.context.stepId, request, fileObj);
+            this.reportportal.sendLog(this.contextState.context.stepId, request, fileObj);
             break;
           }
         }
@@ -368,14 +376,14 @@ const createRPFormatterClass = (config) => {
     }
 
     onTestCaseFinished(event) {
-      if (!isScenarioBasedStatistics() && event.result.retried) {
+      if (!utils.isScenarioBasedStatistics() && event.result.retried) {
         return;
       }
       const isFailed = event.result.status.toUpperCase() !== 'PASSED';
       // ScenarioResult
-      reportportal.finishTestItem(this.contextState.context.scenarioId, {
+      this.reportportal.finishTestItem(this.contextState.context.scenarioId, {
         status: isFailed ? 'failed' : 'passed',
-        endTime: reportportal.helpers.now(),
+        endTime: this.reportportal.helpers.now(),
       });
       this.contextState.context.scenarioStatus = 'failed';
       this.contextState.context.scenarioId = null;
@@ -388,26 +396,31 @@ const createRPFormatterClass = (config) => {
       if (done === total) {
         const featureStatus =
           this.contextState.context.failedScenarios[featureUri] > 0 ? 'failed' : 'passed';
-        reportportal.finishTestItem(documentsStorage.pickleDocuments[featureUri].featureId, {
-          status: featureStatus,
-          endTime: reportportal.helpers.now(),
-        });
+        this.reportportal.finishTestItem(
+          this.documentsStorage.pickleDocuments[featureUri].featureId,
+          {
+            status: featureStatus,
+            endTime: this.reportportal.helpers.now(),
+          },
+        );
       }
     }
 
     onTestRunFinished() {
       // AfterFeatures
-      const promise = reportportal.getPromiseFinishAllItems(this.contextState.context.launchId);
+      const promise = this.reportportal.getPromiseFinishAllItems(
+        this.contextState.context.launchId,
+      );
       promise.then(() => {
         if (this.contextState.context.launchId) {
-          const launchFinishPromise = reportportal.finishLaunch(
+          const launchFinishPromise = this.reportportal.finishLaunch(
             this.contextState.context.launchId,
             {
-              endTime: reportportal.helpers.now(),
+              endTime: this.reportportal.helpers.now(),
             },
           ).promise;
           launchFinishPromise.then(() => {
-            this.contextState.context = cleanContext();
+            this.contextState.context = utils.cleanContext();
           });
         }
       });
