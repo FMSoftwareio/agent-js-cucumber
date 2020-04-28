@@ -47,7 +47,7 @@ const createRPFormatterClass = (config) => {
           name: config.launch,
           startTime: this.reportportal.helpers.now(),
           description: !config.description ? '' : config.description,
-          attributes: attributesConf,
+          attributes: this.attributesConf,
           rerun: this.isRerun,
           rerunOf: this.rerunOf,
         });
@@ -68,9 +68,7 @@ const createRPFormatterClass = (config) => {
         const featureUri = utils.getUri(event.uri);
         const description = featureDocument.description ? featureDocument.description : featureUri;
         const { name } = featureDocument;
-        const eventAttributes = featureDocument.tags
-          ? featureDocument.tags.map((tag) => utils.createAttribute(tag.name))
-          : [];
+        const itemAttributes = utils.createAttributes(featureDocument.tags);
 
         let total = featureDocument.children.length;
         featureDocument.children.forEach((child) => {
@@ -95,7 +93,7 @@ const createRPFormatterClass = (config) => {
             startTime: this.reportportal.helpers.now(),
             type: this.isScenarioBasedStatistics ? 'TEST' : 'SUITE',
             description,
-            attributes: eventAttributes,
+            attributes: itemAttributes,
           },
           this.contextState.context.launchId,
         ).tempId;
@@ -123,11 +121,10 @@ const createRPFormatterClass = (config) => {
         ? this.contextState.context.scenario.keyword
         : this.contextState.context.scenario.type;
       let name = [keyword, this.contextState.context.scenario.name].join(': ');
-      const eventAttributes = pickle.tags
-        ? pickle.tags
-            .filter((tag) => !featureTags.find(utils.createTagComparator(tag)))
-            .map((tag) => utils.createAttribute(tag.name))
+      const pickleTags = pickle.tags
+        ? pickle.tags.filter((tag) => !featureTags.find(utils.createTagComparator(tag)))
         : [];
+      const itemAttributes = utils.createAttributes(pickleTags);
       const description =
         this.contextState.context.scenario.description ||
         [utils.getUri(event.sourceLocation.uri), event.sourceLocation.line].join(':'); // TODO codeRef
@@ -149,7 +146,7 @@ const createRPFormatterClass = (config) => {
             startTime: this.reportportal.helpers.now(),
             type: this.isScenarioBasedStatistics ? 'STEP' : 'TEST',
             description,
-            attributes: eventAttributes,
+            attributes: itemAttributes,
             retry: false,
           },
           this.contextState.context.launchId,
@@ -191,12 +188,7 @@ const createRPFormatterClass = (config) => {
       const name = this.contextState.context.step.text
         ? `${this.contextState.context.step.keyword} ${this.contextState.context.step.text}`
         : this.contextState.context.step.keyword;
-      let type = 'STEP';
-      if (this.contextState.context.step.keyword === 'Before') {
-        type = 'BEFORE_TEST';
-      } else if (this.contextState.context.step.keyword === 'After') {
-        type = 'AFTER_TEST';
-      }
+      const type = utils.getStepType(this.contextState.context.step.keyword);
 
       this.contextState.context.stepId = this.reportportal.startTestItem(
         {
